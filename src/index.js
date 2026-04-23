@@ -26,16 +26,140 @@ const {
     getCampaign,
     listCampaigns,
     getLogs,
+    getStoreHealth,
+    closeStore,
 } = require("./store");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const appBasicAuthUser = process.env.APP_BASIC_AUTH_USER || "MERCADEO";
+const appBasicAuthPassword = process.env.APP_BASIC_AUTH_PASSWORD || "MERCADEO2026";
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 12 * 1024 * 1024 },
 });
 
 app.use(express.json({ limit: "1mb" }));
+
+let server;
+let shuttingDown = false;
+
+function reportProcessIssue(kind, error) {
+    const message = error instanceof Error ? error.message : String(error || kind);
+    const stack = error instanceof Error ? error.stack : undefined;
+
+    console.error(`[process:${kind}]`, stack || message);
+    try {
+        appendLog({
+            type: "process_issue",
+            status: kind,
+            error: message,
+            payload: stack ? { stack } : undefined,
+        });
+    } catch (logError) {
+        console.error("No fue posible persistir el fallo de proceso", logError);
+    }
+}
+
+function shutdown(signal) {
+    if (shuttingDown) {
+        return;
+    }
+    shuttingDown = true;
+    console.log(`Cierre ordenado iniciado por ${signal}`);
+
+    const finish = () => {
+        try {
+            closeStore();
+        } catch (error) {
+            console.error("Error cerrando la base de datos", error);
+        }
+        process.exit(0);
+    };
+
+    if (!server) {
+        finish();
+        return;
+    }
+
+    server.close(() => {
+        finish();
+    });
+
+    setTimeout(() => {
+        console.error("Cierre forzado tras timeout de 10s");
+        finish();
+    }, 10000).unref();
+}
+
+process.on("unhandledRejection", (reason) => {
+    reportProcessIssue("unhandledRejection", reason);
+});
+
+process.on("uncaughtException", (error) => {
+    reportProcessIssue("uncaughtException", error);
+});
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+function unauthorized(res) {
+    res.setHeader("WWW-Authenticate", 'Basic realm="Meteoro"');
+    return res.status(401).json({ ok: false, message: "Autenticacion requerida" });
+}
+
+function safeCompare(left, right) {
+    const a = Buffer.from(String(left || ""));
+    const b = Buffer.from(String(right || ""));
+    if (a.length !== b.length) {
+        return false;
+    }
+    return crypto.timingSafeEqual(a, b);
+}
+
+function parseBasicAuthHeader(headerValue) {
+    if (!headerValue || !headerValue.startsWith("Basic ")) {
+        return null;
+    }
+
+    try {
+        const encoded = headerValue.slice(6).trim();
+        const decoded = Buffer.from(encoded, "base64").toString("utf8");
+        const separator = decoded.indexOf(":");
+        if (separator < 0) {
+            return null;
+        }
+        return {
+            username: decoded.slice(0, separator),
+            password: decoded.slice(separator + 1),
+        };
+    } catch (_error) {
+        return null;
+    }
+}
+
+function requiresNoAuth(req) {
+    return req.path === "/health" || req.path === "/webhook";
+}
+
+app.use((req, res, next) => {
+    if (requiresNoAuth(req)) {
+        return next();
+    }
+
+    const credentials = parseBasicAuthHeader(req.headers.authorization);
+    if (!credentials) {
+        return unauthorized(res);
+    }
+
+    const isValidUser = safeCompare(credentials.username, appBasicAuthUser);
+    const isValidPassword = safeCompare(credentials.password, appBasicAuthPassword);
+    if (!isValidUser || !isValidPassword) {
+        return unauthorized(res);
+    }
+
+    return next();
+});
 
 function parseMaybeJson(value, fallback = undefined) {
     if (value === undefined || value === null || value === "") {
@@ -248,7 +372,7 @@ async function sendByMessageType({ to, row, message, credentials }) {
 }
 
 app.get("/health", (_req, res) => {
-    res.json({ ok: true, service: "whatsapp-template-sender" });
+    res.json({ ok: true, service: "whatsapp-template-sender", store: getStoreHealth() });
 });
 
 app.get("/brands", (_req, res) => {
@@ -634,6 +758,7 @@ app.post("/campaigns/from-excel", upload.single("file"), async (req, res) => {
         const campaign = {
             id: campaignId,
             createdAt: new Date().toISOString(),
+            baseReference: req.body.baseReference ? String(req.body.baseReference).trim().slice(0, 60) : undefined,
             startAt: startAt ? startAt.toISOString() : new Date().toISOString(),
             status: startAt && startAt.getTime() > Date.now() ? "scheduled" : "running",
             messageType: message.type,
@@ -1541,6 +1666,236 @@ app.get("/platform", (_req, res) => {
             }
             .toast.ok { border-color:rgba(115,240,189,.5); }
             .toast.err { border-color:rgba(255,107,107,.5); }
+            .calendar-shell {
+                display:grid;
+                grid-template-columns:minmax(0, 1.6fr) minmax(280px, .9fr);
+                gap:12px;
+            }
+            .calendar-toolbar {
+                display:flex;
+                gap:8px;
+                align-items:center;
+                flex-wrap:wrap;
+                margin-bottom:10px;
+            }
+            .calendar-title {
+                font-size:20px;
+                font-weight:800;
+                letter-spacing:.02em;
+                color:#e6f5ff;
+                margin-right:auto;
+            }
+            .calendar-legend {
+                display:flex;
+                gap:8px;
+                flex-wrap:wrap;
+                margin:0 0 10px;
+            }
+            .calendar-legend span {
+                font-size:11px;
+                border:1px solid rgba(145,178,255,.3);
+                border-radius:999px;
+                padding:5px 9px;
+                color:#cbe3ff;
+                background:rgba(255,255,255,.04);
+            }
+            .calendar-grid {
+                display:grid;
+                grid-template-columns:repeat(7, minmax(0, 1fr));
+                gap:8px;
+            }
+            .calendar-weekday {
+                text-align:center;
+                font-size:11px;
+                color:#98b8df;
+                letter-spacing:.07em;
+                text-transform:uppercase;
+            }
+            .calendar-day {
+                min-height:92px;
+                border:1px solid rgba(145,178,255,.28);
+                border-radius:12px;
+                background:linear-gradient(160deg, rgba(255,255,255,.05), rgba(255,255,255,.015));
+                padding:8px;
+                cursor:pointer;
+                overflow:hidden;
+                transition:border-color .2s ease, transform .2s ease, box-shadow .2s ease;
+            }
+            .calendar-day:hover {
+                border-color:rgba(158,245,196,.5);
+                transform:translateY(-1px);
+                box-shadow:0 8px 16px rgba(0,0,0,.2);
+            }
+            .calendar-day.muted {
+                opacity:.45;
+            }
+            .calendar-day.today {
+                border-color:rgba(94,204,255,.75);
+            }
+            .calendar-day.active {
+                border-color:rgba(158,245,196,.85);
+                box-shadow:0 0 0 1px rgba(158,245,196,.32) inset;
+            }
+            .calendar-day-head {
+                display:flex;
+                align-items:center;
+                justify-content:space-between;
+                font-size:12px;
+                color:#dff2ff;
+            }
+            .calendar-count {
+                font-size:11px;
+                border-radius:999px;
+                border:1px solid rgba(145,178,255,.33);
+                padding:2px 6px;
+                color:#bde2ff;
+            }
+            .calendar-items {
+                margin-top:6px;
+                display:grid;
+                gap:4px;
+            }
+            .calendar-mini {
+                font-size:11px;
+                padding:4px 6px;
+                border-radius:8px;
+                background:rgba(255,255,255,.05);
+                color:#d9ebff;
+                overflow:hidden;
+                text-overflow:ellipsis;
+                white-space:nowrap;
+            }
+            .calendar-mini.status-scheduled { border-left:2px solid #8dd8ff; }
+            .calendar-mini.status-running { border-left:2px solid #9ef5c4; }
+            .calendar-mini.status-completed { border-left:2px solid #8bc34a; }
+            .calendar-mini.status-failed,
+            .calendar-mini.status-error { border-left:2px solid #ff8f8f; }
+            .calendar-day-actions {
+                margin-top:6px;
+                display:grid;
+                grid-template-columns:minmax(0, 1fr) 32px;
+                gap:5px;
+                align-items:center;
+                width:100%;
+            }
+            .calendar-time {
+                width:100%;
+                min-width:0;
+                max-width:100%;
+                border:1px solid rgba(145,178,255,.28);
+                border-radius:8px;
+                background:rgba(2, 6, 23, .35);
+                color:#d9ebff;
+                font-size:10px;
+                line-height:1.1;
+                padding:4px 4px;
+                letter-spacing:-.02em;
+            }
+            .calendar-time::-webkit-date-and-time-value {
+                text-align:left;
+                min-height:auto;
+            }
+            .calendar-time::-webkit-datetime-edit,
+            .calendar-time::-webkit-datetime-edit-fields-wrapper {
+                padding:0;
+            }
+            .calendar-time::-webkit-calendar-picker-indicator {
+                margin:0;
+                opacity:.72;
+                transform:scale(.82);
+            }
+            .calendar-plan-btn {
+                width:32px;
+                min-width:32px;
+                padding:5px 0;
+                font-size:11px;
+                line-height:1;
+            }
+            .calendar-side {
+                border:1px solid rgba(145,178,255,.28);
+                border-radius:12px;
+                padding:12px;
+                background:rgba(255,255,255,.035);
+                display:flex;
+                flex-direction:column;
+                gap:10px;
+            }
+            .calendar-side h4 {
+                margin:0;
+                color:#e6f5ff;
+                font-size:17px;
+            }
+            .calendar-agenda {
+                max-height:420px;
+                overflow:auto;
+                display:grid;
+                gap:8px;
+                padding-right:4px;
+            }
+            .calendar-event {
+                border:1px solid rgba(145,178,255,.28);
+                border-radius:10px;
+                padding:8px;
+                background:rgba(2, 6, 23, .3);
+            }
+            .calendar-event-head {
+                display:flex;
+                align-items:center;
+                justify-content:space-between;
+                gap:8px;
+                margin-bottom:4px;
+            }
+            .calendar-event-time { color:#dff3ff; font-size:12px; font-weight:700; }
+            .calendar-event-meta { font-size:12px; color:#afcbef; }
+            .calendar-empty {
+                border:1px dashed rgba(145,178,255,.3);
+                border-radius:10px;
+                padding:12px;
+                color:#9bbde3;
+                text-align:center;
+                font-size:12px;
+            }
+            .calendar-modal {
+                position:fixed;
+                inset:0;
+                z-index:9997;
+                display:none;
+                align-items:center;
+                justify-content:center;
+                background:rgba(2, 8, 20, .62);
+                backdrop-filter: blur(3px);
+                padding:12px;
+            }
+            .calendar-modal.open { display:flex; }
+            .calendar-modal-card {
+                width:min(460px, 100%);
+                border:1px solid rgba(145,178,255,.38);
+                border-radius:14px;
+                background:rgba(4, 10, 26, .96);
+                box-shadow:0 14px 32px rgba(0,0,0,.34);
+                padding:14px;
+                color:#dff3ff;
+            }
+            .calendar-modal-card h4 {
+                margin:0 0 6px;
+                font-size:18px;
+                color:#e7f5ff;
+            }
+            .calendar-modal-card p {
+                margin:0 0 10px;
+                color:#a9c4ea;
+                font-size:12px;
+            }
+            .calendar-modal-actions {
+                display:flex;
+                gap:8px;
+                justify-content:flex-end;
+                margin-top:6px;
+            }
+            .calendar-modal-actions button {
+                width:auto;
+                padding:9px 12px;
+            }
             .flow-panel-enter { animation: flowSlide .22s ease-out; }
             @keyframes flowSlide {
                 from { opacity:0; transform:translateX(16px); }
@@ -1578,6 +1933,11 @@ app.get("/platform", (_req, res) => {
                 .wrap { padding: 0 12px 22px; }
                 .hero .orbit,
                 .hero .orbit.orbit-2 { display:none; }
+                .calendar-shell { grid-template-columns:1fr; }
+                .calendar-day { min-height:84px; }
+                .calendar-day-actions { grid-template-columns:minmax(0, 1fr) 28px; gap:4px; }
+                .calendar-time { font-size:9px; padding:3px 3px; }
+                .calendar-plan-btn { width:28px; min-width:28px; }
             }
     </style>
   </head>
@@ -1608,6 +1968,7 @@ app.get("/platform", (_req, res) => {
             <div class="top-nav">
                 <button id="navCampaignsBtn" type="button" class="active">Campanas</button>
                 <button id="navDataBtn" type="button">Bases de datos</button>
+                <button id="navCalendarBtn" type="button">Calendario</button>
                 <button id="toggleAdvancedBtn" type="button" class="secondary secondary-toggle">Modo experto</button>
             </div>
 
@@ -1857,6 +2218,67 @@ app.get("/platform", (_req, res) => {
                 </div>
             </div>
 
+            <div id="calendarView" class="grid" style="display:none">
+                <div class="card" style="grid-column:1/-1">
+                    <h3>9) Programador mensual</h3>
+                    <p class="helper">Vista estilo planner para organizar multiples campanas por mes y revisar huecos de envio.</p>
+                    <div class="calendar-shell">
+                        <div>
+                            <div class="calendar-toolbar">
+                                <div id="calendarMonthTitle" class="calendar-title">Mes</div>
+                                <button id="calendarPrevMonthBtn" type="button" class="secondary" style="width:auto">Mes anterior</button>
+                                <button id="calendarTodayBtn" type="button" class="secondary" style="width:auto">Hoy</button>
+                                <button id="calendarNextMonthBtn" type="button" class="secondary" style="width:auto">Mes siguiente</button>
+                            </div>
+                            <div class="calendar-legend">
+                                <span>scheduled: pendiente</span>
+                                <span>running: en ejecucion</span>
+                                <span>completed: finalizada</span>
+                                <span>failed/error: revisar</span>
+                            </div>
+                            <div id="calendarGrid" class="calendar-grid"></div>
+                        </div>
+                        <aside class="calendar-side">
+                            <h4 id="calendarSelectedTitle">Dia seleccionado</h4>
+                            <p id="calendarSelectedHint" class="muted" style="margin:0">Selecciona una fecha para ver detalle y saltar al programador.</p>
+                            <div class="row" style="margin:0;align-items:flex-end">
+                                <div style="flex:1;min-width:140px">
+                                    <label>Hora sugerida</label>
+                                    <input id="calendarSelectedTime" type="time" value="09:00" />
+                                </div>
+                            </div>
+                            <button id="calendarGoToSchedulerBtn" type="button" style="width:auto">Programar nueva campana en este dia</button>
+                            <div id="calendarDayAgenda" class="calendar-agenda"></div>
+                        </aside>
+                    </div>
+                </div>
+            </div>
+
+            <div id="calendarQuickModal" class="calendar-modal" aria-hidden="true">
+                <div class="calendar-modal-card">
+                    <h4>Programacion rapida</h4>
+                    <p>Define la hora y una referencia de base. Luego pasamos directo al paso de creacion de campana.</p>
+                    <div class="row mb" style="align-items:flex-end">
+                        <div style="flex:1;min-width:170px">
+                            <label>Fecha</label>
+                            <input id="calendarQuickDate" type="date" readonly />
+                        </div>
+                        <div style="flex:1;min-width:130px">
+                            <label>Hora</label>
+                            <input id="calendarQuickTime" type="time" value="09:00" />
+                        </div>
+                    </div>
+                    <div class="mb">
+                        <label>Base / referencia</label>
+                        <input id="calendarQuickBase" placeholder="Ej: clientes-vip-abril" />
+                    </div>
+                    <div class="calendar-modal-actions">
+                        <button id="calendarQuickCloseBtn" type="button" class="secondary">Cerrar</button>
+                        <button id="calendarQuickApplyBtn" type="button">Ir a programar</button>
+                    </div>
+                </div>
+            </div>
+
             <div class="card section campaign-only" data-flow-step="4">
                 <h3>6) Logs recientes</h3>
                 <p class="helper">Historial de resultados para auditoria y soporte.</p>
@@ -1972,10 +2394,13 @@ app.get("/platform", (_req, res) => {
                 if (moonEl) { moonEl.textContent = getMoonPhaseLabel(now); }
                 if (missionEl) {
                     var isCampaigns = document.getElementById('navCampaignsBtn').classList.contains('active');
+                    var isData = document.getElementById('navDataBtn').classList.contains('active');
                     if (isCampaigns) {
                         missionEl.textContent = 'Campanas · Paso ' + ((window._campaignStepIndex || 0) + 1);
-                    } else {
+                    } else if (isData) {
                         missionEl.textContent = 'Bases de datos · Exploracion';
+                    } else {
+                        missionEl.textContent = 'Calendario · Programador mensual';
                     }
                 }
             }
@@ -1984,6 +2409,11 @@ app.get("/platform", (_req, res) => {
                 var ctx = document.getElementById('astroGuideContext');
                 if (!ctx) { return; }
                 var isCampaigns = document.getElementById('navCampaignsBtn').classList.contains('active');
+                var isCalendar = document.getElementById('navCalendarBtn').classList.contains('active');
+                if (isCalendar) {
+                    ctx.textContent = 'El calendario ordena tus lanzamientos del mes: toca un dia para ver campanas y abre el programador en segundos.';
+                    return;
+                }
                 if (!isCampaigns) {
                     ctx.textContent = 'Las cartas celestes se abren en Bases de datos: aqui forjas audiencias con SHOW/SELECT, filtros y variables.';
                     return;
@@ -2011,21 +2441,234 @@ app.get("/platform", (_req, res) => {
 
             function setMainView(view) {
                 var showCampaigns = view === 'campaigns';
+                var showData = view === 'data';
+                var showCalendar = view === 'calendar';
                 document.querySelectorAll('.campaign-only').forEach(function(el) {
                     el.style.display = showCampaigns ? '' : 'none';
                 });
                 var dataView = document.getElementById('dataView');
-                dataView.style.display = showCampaigns ? 'none' : 'grid';
+                var calendarView = document.getElementById('calendarView');
+                dataView.style.display = showData ? 'grid' : 'none';
+                calendarView.style.display = showCalendar ? 'grid' : 'none';
                 document.getElementById('navCampaignsBtn').classList.toggle('active', showCampaigns);
-                document.getElementById('navDataBtn').classList.toggle('active', !showCampaigns);
+                document.getElementById('navDataBtn').classList.toggle('active', showData);
+                document.getElementById('navCalendarBtn').classList.toggle('active', showCalendar);
                 if (showCampaigns) {
                     setCampaignStep(window._campaignStepIndex || 0);
+                }
+                if (showCalendar) {
+                    renderCalendarMonth();
                 }
                 renderAstroTelemetry();
                 renderAstroGuideContext();
                 try {
-                    localStorage.setItem('meteoro.mainView', showCampaigns ? 'campaigns' : 'data');
+                    localStorage.setItem('meteoro.mainView', showCampaigns ? 'campaigns' : (showData ? 'data' : 'calendar'));
                 } catch (_e) {}
+            }
+
+            function toYmd(dateObj) {
+                var y = dateObj.getFullYear();
+                var m = String(dateObj.getMonth() + 1).padStart(2, '0');
+                var d = String(dateObj.getDate()).padStart(2, '0');
+                return y + '-' + m + '-' + d;
+            }
+
+            function toLocalDateFromYmd(ymd) {
+                var parts = String(ymd || '').split('-');
+                if (parts.length !== 3) { return null; }
+                var y = Number(parts[0]);
+                var m = Number(parts[1]);
+                var d = Number(parts[2]);
+                if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) { return null; }
+                return new Date(y, m - 1, d);
+            }
+
+            function formatMonthTitle(dateObj) {
+                return dateObj.toLocaleDateString('es-CO', { month: 'long', year: 'numeric' });
+            }
+
+            function ensureCalendarState() {
+                if (!window._calendarCursor) {
+                    var now = new Date();
+                    window._calendarCursor = new Date(now.getFullYear(), now.getMonth(), 1);
+                }
+                if (!window._calendarSelectedKey) {
+                    window._calendarSelectedKey = toYmd(new Date());
+                }
+            }
+
+            function campaignStatusClass(status) {
+                return 'status-' + String(status || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            }
+
+            function renderCalendarAgenda(events, ymd) {
+                var title = document.getElementById('calendarSelectedTitle');
+                var hint = document.getElementById('calendarSelectedHint');
+                var agenda = document.getElementById('calendarDayAgenda');
+                if (!title || !hint || !agenda) { return; }
+
+                var dateObj = toLocalDateFromYmd(ymd);
+                title.textContent = dateObj ? dateObj.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' }) : 'Dia seleccionado';
+
+                if (!events.length) {
+                    hint.textContent = 'No hay campanas registradas para este dia. Puedes usar el boton para programar una nueva.';
+                    agenda.innerHTML = '<div class="calendar-empty">Sin eventos para esta fecha.</div>';
+                    return;
+                }
+
+                hint.textContent = events.length + ' campana(s) en esta fecha.';
+                agenda.innerHTML = events.map(function(item) {
+                    var t = item.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    var status = item.campaign.status || 'unknown';
+                    return '<div class="calendar-event">'
+                        + '<div class="calendar-event-head"><span class="calendar-event-time">' + t + '</span><span class="badge">' + status + '</span></div>'
+                        + '<div class="calendar-event-meta">ID: ' + item.campaign.id + '</div>'
+                        + '<div class="calendar-event-meta">Tipo: ' + (item.campaign.messageType || '-') + ' · Total: ' + (item.campaign.total || 0) + '</div>'
+                        + '</div>';
+                }).join('');
+            }
+
+            function openSchedulerForCalendarSlot(dayKey, hhmm, baseRef) {
+                var dateObj = toLocalDateFromYmd(dayKey);
+                if (!dateObj) {
+                    setResult('campaignResult', false, 'Selecciona un dia valido en calendario.');
+                    return;
+                }
+                var timeValue = (hhmm && /^\d{2}:\d{2}$/.test(hhmm)) ? hhmm : '09:00';
+                setMainView('campaigns');
+                setCampaignStep(2);
+                var dateInput = document.getElementById('scheduleDate');
+                var timeInput = document.getElementById('scheduleTime');
+                var picker = document.getElementById('startAtPicker');
+                if (dateInput) { dateInput.value = dayKey; }
+                if (timeInput) { timeInput.value = timeValue; }
+                if (picker) {
+                    picker.value = dayKey + 'T' + timeValue;
+                }
+                updateStartAtPreview();
+                toggleSchedulePopover(true);
+                var extra = baseRef ? (' Referencia: ' + baseRef + '.') : '';
+                setResult('campaignResult', true, 'Fecha y hora cargadas desde calendario.' + extra + ' Solo falta subir Excel y crear la campana.');
+                document.getElementById('campaignCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+
+            function toggleCalendarQuickModal(show, dayKey, hhmm) {
+                var modal = document.getElementById('calendarQuickModal');
+                var dateInput = document.getElementById('calendarQuickDate');
+                var timeInput = document.getElementById('calendarQuickTime');
+                var baseInput = document.getElementById('calendarQuickBase');
+                if (!modal || !dateInput || !timeInput || !baseInput) { return; }
+                if (show) {
+                    var safeDay = dayKey || window._calendarSelectedKey || toYmd(new Date());
+                    var safeTime = (hhmm && /^\d{2}:\d{2}$/.test(hhmm)) ? hhmm : '09:00';
+                    window._calendarQuickDayKey = safeDay;
+                    dateInput.value = safeDay;
+                    timeInput.value = safeTime;
+                    baseInput.value = '';
+                }
+                modal.classList.toggle('open', !!show);
+                modal.setAttribute('aria-hidden', show ? 'false' : 'true');
+            }
+
+            function applyCalendarQuickModal() {
+                var dayKey = window._calendarQuickDayKey || document.getElementById('calendarQuickDate').value;
+                var hhmm = document.getElementById('calendarQuickTime').value || '09:00';
+                var baseRef = (document.getElementById('calendarQuickBase').value || '').trim();
+                window._calendarQuickBaseRef = baseRef;
+                toggleCalendarQuickModal(false);
+                window._campaignReferenceFromCalendar = baseRef;
+                openSchedulerForCalendarSlot(dayKey, hhmm, baseRef);
+            }
+
+            function openCalendarQuickFromDay(dayKey) {
+                var timeInput = document.querySelector('[data-day-time="' + dayKey + '"]');
+                var hhmm = timeInput && timeInput.value ? timeInput.value : '09:00';
+                toggleCalendarQuickModal(true, dayKey, hhmm);
+            }
+
+            function renderCalendarMonth() {
+                ensureCalendarState();
+                var title = document.getElementById('calendarMonthTitle');
+                var grid = document.getElementById('calendarGrid');
+                if (!title || !grid) { return; }
+
+                var cursor = window._calendarCursor;
+                var year = cursor.getFullYear();
+                var month = cursor.getMonth();
+                title.textContent = formatMonthTitle(cursor);
+
+                var campaigns = Array.isArray(window._kpiCampaigns) ? window._kpiCampaigns : [];
+                var grouped = {};
+                campaigns.forEach(function(campaign) {
+                    if (!campaign || !campaign.startAt) { return; }
+                    var d = new Date(campaign.startAt);
+                    if (Number.isNaN(d.getTime())) { return; }
+                    var key = toYmd(d);
+                    if (!grouped[key]) { grouped[key] = []; }
+                    grouped[key].push({ campaign: campaign, date: d });
+                });
+
+                Object.keys(grouped).forEach(function(key) {
+                    grouped[key].sort(function(a, b) { return a.date.getTime() - b.date.getTime(); });
+                });
+
+                var first = new Date(year, month, 1);
+                var firstWeekDay = (first.getDay() + 6) % 7;
+                var gridStart = new Date(year, month, 1 - firstWeekDay);
+                var todayKey = toYmd(new Date());
+                var selectedKey = window._calendarSelectedKey;
+                var days = ['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'];
+                var html = days.map(function(label) { return '<div class="calendar-weekday">' + label + '</div>'; }).join('');
+
+                for (var i = 0; i < 42; i += 1) {
+                    var day = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
+                    var key = toYmd(day);
+                    var events = grouped[key] || [];
+                    var inMonth = day.getMonth() === month;
+                    var classes = ['calendar-day'];
+                    if (!inMonth) { classes.push('muted'); }
+                    if (key === todayKey) { classes.push('today'); }
+                    if (key === selectedKey) { classes.push('active'); }
+                    var mini = events.slice(0, 2).map(function(item) {
+                        var time = item.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        return '<div class="calendar-mini ' + campaignStatusClass(item.campaign.status) + '">' + time + ' · ' + (item.campaign.messageType || '-') + '</div>';
+                    }).join('');
+                    if (events.length > 2) {
+                        mini += '<div class="calendar-mini">+' + (events.length - 2) + ' mas...</div>';
+                    }
+                    var baseHint = events[0] && events[0].campaign.baseReference ? ' (' + events[0].campaign.baseReference.slice(0, 12) + ')' : '';
+                    mini += '<div class="calendar-day-actions" title="' + (baseHint ? baseHint : 'Click para programar') + '">'
+                        + '<input type="time" class="calendar-time" value="09:00" data-day-time="' + key + '" />'
+                        + '<button type="button" class="secondary calendar-plan-btn" data-day-plan="' + key + '" onclick="openCalendarQuickFromDay(this.dataset.dayPlan)">+</button>'
+                        + '</div>';
+                    html += '<div class="' + classes.join(' ') + '" data-day-key="' + key + '">'
+                        + '<div class="calendar-day-head"><b>' + day.getDate() + '</b><span class="calendar-count">' + events.length + '</span></div>'
+                        + '<div class="calendar-items">' + mini + '</div>'
+                        + '</div>';
+                }
+
+                grid.innerHTML = html;
+                renderCalendarAgenda(grouped[selectedKey] || [], selectedKey);
+            }
+
+            function moveCalendarMonth(delta) {
+                ensureCalendarState();
+                window._calendarCursor = new Date(window._calendarCursor.getFullYear(), window._calendarCursor.getMonth() + delta, 1);
+                renderCalendarMonth();
+            }
+
+            function jumpCalendarToday() {
+                var now = new Date();
+                window._calendarCursor = new Date(now.getFullYear(), now.getMonth(), 1);
+                window._calendarSelectedKey = toYmd(now);
+                renderCalendarMonth();
+            }
+
+            function openSchedulerForCalendarDay() {
+                var selectedKey = window._calendarSelectedKey;
+                var selectedTime = document.getElementById('calendarSelectedTime');
+                var hhmm = selectedTime && selectedTime.value ? selectedTime.value : '09:00';
+                openSchedulerForCalendarSlot(selectedKey, hhmm);
             }
 
             function setCampaignStep(index) {
@@ -2415,8 +3058,9 @@ app.get("/platform", (_req, res) => {
         const json = await res.json();
                 var campaigns = (json.data || []);
                 window._kpiCampaigns = campaigns;
-                const rows = campaigns.map(function(c) { return '<tr><td>' + c.id + '</td><td><span class="badge">' + c.status + '</span></td><td>' + c.messageType + '</td><td>' + c.total + '</td><td>' + c.sent + '</td><td>' + c.failed + '</td></tr>'; }).join('');
+                const rows = campaigns.map(function(c) { var baseCol = c.baseReference ? '<span class="muted" title="' + c.baseReference + '"> · ' + c.baseReference.slice(0, 18) + '</span>' : ''; return '<tr><td>' + c.id + '</td><td><span class="badge">' + c.status + '</span></td><td>' + c.messageType + baseCol + '</td><td>' + c.total + '</td><td>' + c.sent + '</td><td>' + c.failed + '</td></tr>'; }).join('');
                 document.querySelector('#campaignsTable tbody').innerHTML = rows || '<tr><td colspan="6"><div class="empty-state">Aun no hay campanas. Sube un Excel en el paso 3 para crear la primera.</div></td></tr>';
+                                renderCalendarMonth();
                 renderKpis();
       }
       async function loadLogs() {
@@ -2560,6 +3204,8 @@ app.get("/platform", (_req, res) => {
                 if (startAt) { form.append('startAt', startAt); }
                 form.append('message', JSON.stringify(message));
                 form.append('antiSpam', JSON.stringify(antiSpam));
+                var baseRef = window._calendarQuickBaseRef ? String(window._calendarQuickBaseRef).trim() : '';
+                if (baseRef) { form.append('baseReference', baseRef); }
 
                 const res = await fetch('/campaigns/from-excel', { method: 'POST', body: form });
                 const json = await res.json();
@@ -2906,7 +3552,7 @@ app.get("/platform", (_req, res) => {
                     rememberedStep = localStorage.getItem('meteoro.campaignStep') || '0';
                 } catch (_e) {}
                 window._campaignStepIndex = Number(rememberedStep) || 0;
-                setMainView(rememberedView === 'data' ? 'data' : 'campaigns');
+                setMainView((rememberedView === 'data' || rememberedView === 'calendar') ? rememberedView : 'campaigns');
                 setAdvancedMode(rememberedAdvanced === '1');
                 syncSinglePayloadByType();
                 renderInteractiveBuilder();
@@ -2955,6 +3601,7 @@ app.get("/platform", (_req, res) => {
             document.getElementById('resetDataBlueprintBtn').addEventListener('click', resetDataBlueprint);
             document.getElementById('navCampaignsBtn').addEventListener('click', function() { setMainView('campaigns'); });
             document.getElementById('navDataBtn').addEventListener('click', function() { setMainView('data'); });
+            document.getElementById('navCalendarBtn').addEventListener('click', function() { setMainView('calendar'); });
             document.getElementById('toggleAdvancedBtn').addEventListener('click', function() {
                 var isSimple = document.body.classList.contains('simple-mode');
                 setAdvancedMode(isSimple);
@@ -2984,6 +3631,36 @@ app.get("/platform", (_req, res) => {
             });
             document.getElementById('flowNextBtn').addEventListener('click', function() {
                 setCampaignStep((window._campaignStepIndex || 0) + 1);
+            });
+            document.getElementById('calendarPrevMonthBtn').addEventListener('click', function() { moveCalendarMonth(-1); });
+            document.getElementById('calendarNextMonthBtn').addEventListener('click', function() { moveCalendarMonth(1); });
+            document.getElementById('calendarTodayBtn').addEventListener('click', jumpCalendarToday);
+            document.getElementById('calendarGoToSchedulerBtn').addEventListener('click', openSchedulerForCalendarDay);
+            document.getElementById('calendarQuickCloseBtn').addEventListener('click', function() { toggleCalendarQuickModal(false); });
+            document.getElementById('calendarQuickApplyBtn').addEventListener('click', applyCalendarQuickModal);
+            document.getElementById('calendarQuickModal').addEventListener('click', function(ev) {
+                if (ev.target && ev.target.id === 'calendarQuickModal') {
+                    toggleCalendarQuickModal(false);
+                }
+            });
+            document.getElementById('calendarGrid').addEventListener('click', function(ev) {
+                var planBtn = ev.target && ev.target.closest('[data-day-plan]');
+                if (planBtn) {
+                    var dayKey = planBtn.getAttribute('data-day-plan');
+                    openCalendarQuickFromDay(dayKey);
+                    return;
+                }
+                if (ev.target && ev.target.closest('input[type="time"]')) {
+                    return;
+                }
+                var dayEl = ev.target && ev.target.closest('[data-day-key]');
+                if (!dayEl) { return; }
+                window._calendarSelectedKey = dayEl.getAttribute('data-day-key');
+                var selectedDate = toLocalDateFromYmd(window._calendarSelectedKey);
+                if (selectedDate) {
+                    window._calendarCursor = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1);
+                }
+                renderCalendarMonth();
             });
             document.querySelectorAll('.flow-chip').forEach(function(chip) {
                 chip.addEventListener('click', function() {
@@ -3041,7 +3718,7 @@ app.use((err, _req, res, _next) => {
     });
 });
 
-app.listen(port, () => {
+server = app.listen(port, () => {
     console.log(`Servidor listo en http://localhost:${port}`);
     console.log(`Dashboard en http://localhost:${port}/dashboard`);
 });

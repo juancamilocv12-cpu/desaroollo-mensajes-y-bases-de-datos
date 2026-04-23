@@ -1,4 +1,4 @@
-# WhatsApp Cloud API Campaign Engine
+ABE# WhatsApp Cloud API Campaign Engine
 
 Servicio HTTP para automatizaciones estilo Make con:
 
@@ -30,6 +30,10 @@ cp .env.example .env
 
 ```env
 PORT=3000
+APP_DB_PATH=./data/meteoro.sqlite
+APP_DB_MAX_LOGS=20000
+APP_BASIC_AUTH_USER=MERCADEO
+APP_BASIC_AUTH_PASSWORD=MERCADEO2026
 WHATSAPP_API_VERSION=v21.0
 WHATSAPP_PHONE_NUMBER_ID=1234567890
 WHATSAPP_ACCESS_TOKEN=EAAG...
@@ -37,11 +41,38 @@ WHATSAPP_BUSINESS_ACCOUNT_ID=1234567890
 WHATSAPP_WEBHOOK_VERIFY_TOKEN=mi_token_de_verificacion
 ```
 
+Persistencia:
+
+- `APP_DB_PATH`: ruta del archivo SQLite donde se guardan campanas y logs.
+- `APP_DB_MAX_LOGS`: cantidad maxima de logs retenidos antes de podar historico.
+- `APP_BASIC_AUTH_USER`: usuario para entrar a la plataforma y APIs operativas.
+- `APP_BASIC_AUTH_PASSWORD`: clave de acceso HTTP Basic.
+
 ## 4) Arranque
 
 ```bash
 npm run dev
 ```
+
+Para produccion usa preferiblemente:
+
+```bash
+npm start
+```
+
+El servicio ahora:
+
+- Guarda campanas y logs en SQLite.
+- Protege la plataforma y APIs con HTTP Basic Auth.
+- Expone el estado del store en `GET /health`.
+- Registra `unhandledRejection` y `uncaughtException` en logs internos.
+- Hace cierre ordenado en `SIGINT` y `SIGTERM`.
+
+Rutas sin autenticacion:
+
+- `GET /health`
+- `GET /webhook`
+- `POST /webhook`
 
 ## 5) Endpoints principales
 

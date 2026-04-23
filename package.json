@@ -6,15 +6,21 @@
     "type": "commonjs",
     "scripts": {
         "start": "node src/index.js",
-        "dev": "node --watch src/index.js"
+        "dev": "node --watch src/index.js",
+        "pm2:start": "pm2 start ecosystem.config.cjs",
+        "pm2:restart": "pm2 restart ecosystem.config.cjs --update-env",
+        "pm2:stop": "pm2 delete meteoro",
+        "pm2:logs": "pm2 logs meteoro"
     },
     "engines": {
         "node": ">=18.0.0"
     },
     "dependencies": {
+        "better-sqlite3": "^12.8.0",
         "dotenv": "^16.4.5",
         "exceljs": "^4.4.0",
         "express": "^4.21.2",
-        "multer": "^2.0.2"
+        "multer": "^2.0.2",
+        "pm2": "^6.0.14"
     }
 }
