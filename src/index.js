@@ -139,7 +139,15 @@ function parseBasicAuthHeader(headerValue) {
 }
 
 function requiresNoAuth(req) {
-    return req.path === "/health" || req.path === "/webhook";
+    // No auth required for health, webhook, and platform in development
+    if (req.path === "/health" || req.path === "/webhook" || req.path === "/platform") {
+        return true;
+    }
+    // Allow platform API calls without auth when coming from localhost (development mode)
+    if (process.env.NODE_ENV !== "production" && req.hostname === "localhost") {
+        return true;
+    }
+    return false;
 }
 
 app.use((req, res, next) => {
