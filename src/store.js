@@ -115,6 +115,12 @@ function appendLog(entry) {
 
     insertLogStmt.run({
         ...payload,
+        campaignId: payload.campaignId ?? null,
+        to: payload.to ?? null,
+        type: payload.type ?? null,
+        status: payload.status ?? null,
+        attempt: payload.attempt ?? null,
+        error: payload.error ?? null,
         payload_json: JSON.stringify(payload),
     });
     pruneLogsStmt.run(maxLogs);
