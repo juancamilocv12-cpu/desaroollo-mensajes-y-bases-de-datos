@@ -191,7 +191,7 @@ function getAvailableBrands() {
     if (process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN) {
         brands.push({
             key: "marca1",
-            label: "COMERTEX",
+            label: process.env.WHATSAPP_BRAND1_LABEL || "COMERTEX",
             phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
             accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
             apiVersion: process.env.WHATSAPP_API_VERSION || DEFAULT_API_VERSION,
@@ -203,7 +203,7 @@ function getAvailableBrands() {
     if (process.env.WHATSAPP_BRAND2_PHONE_NUMBER_ID && process.env.WHATSAPP_BRAND2_ACCESS_TOKEN) {
         brands.push({
             key: "marca2",
-            label: "TRU",
+            label: process.env.WHATSAPP_BRAND2_LABEL || "TRU",
             phoneNumberId: process.env.WHATSAPP_BRAND2_PHONE_NUMBER_ID,
             accessToken: process.env.WHATSAPP_BRAND2_ACCESS_TOKEN,
             apiVersion: process.env.WHATSAPP_BRAND2_API_VERSION || process.env.WHATSAPP_API_VERSION || DEFAULT_API_VERSION,
