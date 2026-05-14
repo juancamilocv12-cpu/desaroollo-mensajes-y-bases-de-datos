@@ -212,6 +212,18 @@ function getAvailableBrands() {
         });
     }
 
+    if (process.env.WHATSAPP_BRAND3_PHONE_NUMBER_ID && process.env.WHATSAPP_BRAND3_ACCESS_TOKEN) {
+        brands.push({
+            key: "marca3",
+            label: process.env.WHATSAPP_BRAND3_LABEL || "FINANTEX",
+            phoneNumberId: process.env.WHATSAPP_BRAND3_PHONE_NUMBER_ID,
+            accessToken: process.env.WHATSAPP_BRAND3_ACCESS_TOKEN,
+            apiVersion: process.env.WHATSAPP_BRAND3_API_VERSION || process.env.WHATSAPP_API_VERSION || DEFAULT_API_VERSION,
+            businessAccountId: process.env.WHATSAPP_BRAND3_BUSINESS_ACCOUNT_ID,
+            businessId: process.env.WHATSAPP_BRAND3_BUSINESS_ID,
+        });
+    }
+
     return brands;
 }
 
@@ -2312,7 +2324,7 @@ app.get("/platform", (_req, res) => {
                 <p>El avatar guia te cuenta el recorrido del sistema en tono narrativo.</p>
             </div>
         </div>
-        <div id="astroGuideContext" class="astro-guide-context">En este instante, las estrellas apuntan al portal de Marca: elige COMERTEX o TRU y alinea tus IDs.</div>
+        <div id="astroGuideContext" class="astro-guide-context">En este instante, las estrellas apuntan al portal de Marca: elige COMERTEX, TRU o FINANTEX y alinea tus IDs.</div>
         <ol class="astro-guide-list">
             <li><b>Marca:</b> aqui nace la ruta. Activa el entorno correcto antes de enviar.</li>
             <li><b>Envio + Templates:</b> prueba la nave en corto trayecto y confirma plantilla/media.</li>
@@ -2428,7 +2440,7 @@ app.get("/platform", (_req, res) => {
                 }
                 var step = window._campaignStepIndex || 0;
                 var map = [
-                    'Veo el primer signo: Marca. Elige COMERTEX o TRU y alinea Phone/WABA/Business ID para abrir el canal correcto.',
+                    'Veo el primer signo: Marca. Elige COMERTEX, TRU o FINANTEX y alinea Phone/WABA/Business ID para abrir el canal correcto.',
                     'La constelacion de Envio y Templates indica prueba corta: mensaje individual, media y plantilla bien validadas.',
                     'El oraculo del paso Excel y campanas sugiere cargar base, fijar columna telefono y marcar la ventana de lanzamiento.',
                     'En el cuarto cielo, Interactivo: activa botones o listas para guiar la conversacion viva del cliente.',
